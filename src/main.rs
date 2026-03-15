@@ -1,53 +1,27 @@
 const FEED_URL: &str = "https://feeds.bbci.co.uk/news/rss.xml";
 
-struct FeedItem {
-    id: String,
-    title: String,
-    link: String,
-    summary: String,
-    published: String,
-}
-
-async fn fetch_feed(url: &str) -> Result<Vec<FeedItem>, Box<dyn std::error::Error>> {
-    let response = reqwest::get(url).await?;
-    let body = response.text().await?;
-    let feed = feed_rs::parser::parse(body.as_bytes())?;
-
-    let mut items = Vec::new();
-    for entry in &feed.entries {
-        let item = FeedItem {
-            id: entry.id.clone(),
-            title: entry
-                .title
-                .as_ref()
-                .map(|t| t.content.clone())
-                .unwrap_or_default(),
-            link: entry
-                .links
-                .first()
-                .map(|l| l.href.clone())
-                .unwrap_or_default(),
-            summary: entry
-                .summary
-                .as_ref()
-                .map(|s| s.content.clone())
-                .unwrap_or_default(),
-            published: entry.published.map(|p| p.to_rfc3339()).unwrap_or_default(),
-        };
-        items.push(item);
-    }
-
-    Ok(items)
-}
+mod db;
+mod feed;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let items = fetch_feed(FEED_URL).await?;
+    let db_url = std::env::var("DATABASE_URL")?;
+    let pool = sqlx::PgPool::connect(&db_url).await?;
+    sqlx::migrate!("./migrations").run(&pool).await?;
+    println!("DB 연결 및 마이그레이션 완료");
+
+    let items = feed::fetch_feed(FEED_URL).await?;
 
     println!("아이템 수: {}", items.len());
     for item in &items {
         println!("- {} ({})", item.title, item.published);
     }
+    let feed_id = db::save_feed(&pool, FEED_URL, "BBC News").await?;
+    for item in &items {
+        db::save_feed_item(&pool, feed_id, item).await?;
+    }
+
+    println!("저장 완료: {}건", items.len());
 
     Ok(())
 }
